@@ -1,0 +1,112 @@
+# ============================
+# VARIABLES
+# ============================
+$Drive        = "C:\"
+$TopCount     = 10
+$OutputFolder = "C:\Temp\DiskReports"
+
+if (!(Test-Path $OutputFolder)) {
+    New-Item -ItemType Directory -Path $OutputFolder | Out-Null
+}
+
+$Date = Get-Date -Format "yyyy-MM-dd_HH-mm"
+
+# ============================
+# FUNCTION: GET FOLDER DETAILS
+# ============================
+function Get-FolderDetails {
+    param (
+        [string]$Path
+    )
+
+    try {
+        $items = Get-ChildItem -Path $Path -Recurse -ErrorAction SilentlyContinue
+
+        $size = ($items | Measure-Object -Property Length -Sum).Sum
+
+        $lastModified = ($items | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+
+        $owner = (Get-Acl $Path).Owner
+    }
+    catch {
+        $size = 0
+        $lastModified = $null
+        $owner = "N/A"
+    }
+
+    [PSCustomObject]@{
+        FolderPath    = $Path
+        SizeGB        = [math]::Round($size / 1GB, 2)
+        LastModified  = $lastModified
+        Owner         = $owner
+    }
+}
+
+# ============================
+# TOP FOLDERS IN DRIVE
+# ============================
+Write-Host "Scanning drive: $Drive ..." -ForegroundColor Cyan
+
+$TopFolders = Get-ChildItem -Path $Drive -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Get-FolderDetails -Path $_.FullName } |
+    Sort-Object SizeGB -Descending |
+    Select-Object -First $TopCount
+
+# Output
+$TopFolders | Format-Table -AutoSize
+$TopFolders | Out-GridView -Title "Top $TopCount Folders in $Drive"
+
+# Export CSV
+$DriveCsv = "$OutputFolder\TopFolders_$($Drive.Replace(':',''))_$Date.csv"
+$TopFolders | Export-Csv -Path $DriveCsv -NoTypeInformation
+
+# Export HTML
+$DriveHtml = "$OutputFolder\TopFolders_$($Drive.Replace(':',''))_$Date.html"
+$TopFolders | ConvertTo-Html -Title "Top Folders Report ($Drive)" |
+    Out-File $DriveHtml
+
+# ============================
+# C:\USERS REPORT
+# ============================
+Write-Host "Scanning C:\Users ..." -ForegroundColor Yellow
+
+$UsersPath = "C:\Users"
+
+$UsersReport = Get-ChildItem -Path $UsersPath -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $data = Get-FolderDetails -Path $_.FullName
+
+        # Extract only username from path
+        $username = Split-Path $_.FullName -Leaf
+
+        [PSCustomObject]@{
+            UserName      = $username
+            FolderPath    = $data.FolderPath
+            SizeGB        = $data.SizeGB
+            LastModified  = $data.LastModified
+            Owner         = $data.Owner
+        }
+    } |
+    Sort-Object SizeGB -Descending
+
+# Output
+$UsersReport | Format-Table -AutoSize
+$UsersReport | Out-GridView -Title "Users Folder Usage"
+
+# Export CSV
+$UsersCsv = "$OutputFolder\UsersUsage_$Date.csv"
+$UsersReport | Export-Csv -Path $UsersCsv -NoTypeInformation
+
+# Export HTML
+$UsersHtml = "$OutputFolder\UsersUsage_$Date.html"
+$UsersReport | ConvertTo-Html -Title "Users Folder Usage Report" |
+    Out-File $UsersHtml
+
+# ============================
+# COMPLETION MESSAGE
+# ============================
+Write-Host "Reports generated:" -ForegroundColor Green
+Write-Host $DriveCsv
+Write-Host $DriveHtml
+Write-Host $UsersCsv
+Write-Host $UsersHtml
