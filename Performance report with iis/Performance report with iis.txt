@@ -1,0 +1,257 @@
+# Add-Type -AssemblyName System.Windows.Forms
+
+# Create the HTML content
+$htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Compass Production Azure Server Performance Status with Port Utilization Details</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th, td {
+            border: 1px solid #dddddd;
+            text-align: Center;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .highlight {
+            background-color: red;
+        }
+    </style>
+</head>
+<body>
+
+<h3>Hi Team,</h3>
+<h3>Please find the current performance status of the Compass Azure production server below with Port Utilization Details</h3>
+<br>
+
+<h3 style="color: red; text-align: center;">Compass Production Azure Server Performance Status with Port Utilization Details</h3>
+
+<br>
+<table>
+    <tr>
+        <th>Timestamp</th>
+        <th>ServerName</th>
+        <th>Status</th>
+        <th>UpTime</th>
+        <th>CPU</th>
+        <th>HighCPUService</th>
+        <th>Memory</th>
+        <th>HighMemoryService</th>
+        <th>HighMemoryValue</th>
+        <th>Total Port Count</th>
+        <th>Application Name</th>
+        <th>IIS Port Count</th>
+        <th>Bound</th>
+        <th>Closed</th>
+        <th>Established</th>
+        <th>Listen</th>
+        <th>TimeWait</th>
+    </tr>
+"@
+
+# Set CPU and Memory thresholds
+$cpuThreshold = 80
+$memoryThreshold = 80
+
+$serverNames = 'server101','server102','server103','server104','server105','server106','server107','server108'
+
+foreach ($server in $serverNames) {
+    try {
+        $ping = Test-Connection -ComputerName $server -Count 1 -Quiet
+
+        if ($ping) {
+            $session = New-PSSession -ComputerName $server
+
+            $uptime = Invoke-Command -Session $session -ScriptBlock {
+                try {
+                    $os = Get-CimInstance Win32_OperatingSystem
+                    $lastBootUpTime = $os.LastBootUpTime
+                    $uptime = (Get-Date) - $lastBootUpTime
+                    $uptime.ToString("dd\.hh\:mm\:ss")
+                }
+                catch {
+                    "N/A"
+                }
+            }
+
+            $cpu = Invoke-Command -Session $session -ScriptBlock {
+                try {
+                    $cpuLoad = Get-WmiObject -Class Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average
+                    "{0}%" -f $cpuLoad
+                }
+                catch {
+                    "N/A"
+                }
+            }
+
+            $memory = Invoke-Command -Session $session -ScriptBlock {
+                try {
+                    $mem = Get-WmiObject -Class Win32_OperatingSystem
+                    $totalMemory = $mem.TotalVisibleMemorySize
+                    $freeMemory = $mem.FreePhysicalMemory
+                    $usedMemory = $totalMemory - $freeMemory
+                    $usedMemoryPercent = "{0:N2}%" -f ($usedMemory / $totalMemory * 100)
+                    "{0}" -f $usedMemoryPercent
+                }
+                catch {
+                    "N/A"
+                }
+            }
+
+            $highCpuService = Invoke-Command -Session $session -ScriptBlock {
+                try {
+                    $processes = Get-Process | Sort-Object -Property CPU -Descending
+                    $highCpuProcess = $processes[0]
+                    $highCpuProcess.Name
+                }
+                catch {
+                    "N/A"
+                }
+            }
+
+            $highMemoryService = Invoke-Command -Session $session -ScriptBlock {
+                try {
+                    $processes = Get-Process | Sort-Object -Property WorkingSet -Descending
+                    $highMemoryProcess = $processes[0]
+                    $highMemoryService = $highMemoryProcess.Name
+                    $highMemoryValue = ($highMemoryProcess.WorkingSet / 1GB).ToString("N2") + " GB"
+                    $highMemoryService, $highMemoryValue
+                }
+                catch {
+                    "N/A", "N/A"
+                }
+            }
+
+            # Get port details (for IIS) including the number of ports and states
+            $portDetails = Invoke-Command -Session $session -ScriptBlock {
+                $StateMapping = @{
+                    2  = "Closed"
+                    5  = "Listen"
+                    8  = "Established"
+                    11 = "TimeWait"
+                    100 = "Bound"
+                }
+
+                $connections = Get-NetTCPConnection
+                $processInfo = @()
+
+                foreach ($conn in $connections) {
+                    try {
+                        $process = Get-Process -Id $conn.OwningProcess -ErrorAction Stop
+                        $processInfo += [PSCustomObject]@{
+                            Application  = $process.ProcessName
+                            LocalPort    = $conn.LocalPort
+                            State        = $conn.State
+                        }
+                    } catch {
+                        $processInfo += [PSCustomObject]@{
+                            Application  = "Unknown"
+                            LocalPort    = $conn.LocalPort
+                            State        = $conn.State
+                        }
+                    }
+                }
+
+                $IISDetails = $processInfo | Where-Object { $_.Application -eq 'w3wp' }
+
+                $IISPortCount = $IISDetails.LocalPort | Select-Object -Unique | Measure-Object | Select-Object -ExpandProperty Count
+
+                # Port state counts
+                $PortStateCounts = @{}
+                foreach ($State in $StateMapping.Keys) {
+                    $PortStateCounts[$StateMapping[$State]] = ($IISDetails | Where-Object { $_.State -eq $State }).Count
+                }
+
+                return [PSCustomObject]@{
+                    IISPortCount    = $IISPortCount
+                    PortStateCounts = $PortStateCounts
+                }
+            }
+
+            Remove-PSSession -Session $session
+        }
+        else {
+            $uptime = "N/A"
+            $cpu = "N/A"
+            $memory = "N/A"
+            $highCpuService = "N/A"
+            $highMemoryService = "N/A", "N/A"
+            $portDetails = [PSCustomObject]@{
+                IISPortCount = "N/A"
+                PortStateCounts = @{}
+            }
+        }
+
+        # Remove percentage symbols for comparison
+        $cpuWithoutPercentage = $cpu -replace '%'
+        $memoryWithoutPercentage = $memory -replace '%'
+
+        # Check if CPU and Memory are greater than the threshold (numeric comparison)
+        $highlightCpu = [double]$cpuWithoutPercentage -gt $cpuThreshold
+        $highlightMemory = [double]$memoryWithoutPercentage -gt $memoryThreshold
+
+        # Set the CSS class based on the condition for ServerName cell
+        $serverNameCssClass = if ($highlightCpu -or $highlightMemory) { 'class="highlight"' } else { '' }
+
+        # Append row to HTML content with CSS class for ServerName cell
+        $htmlContent += @"
+    <tr>
+        <td>$([DateTime]::Now)</td>
+        <td $serverNameCssClass>$server</td>
+"@
+        if ($ping) {
+            $htmlContent += @"
+        <td>Online</td>
+"@
+        } else {
+            $htmlContent += @"
+        <td>Offline</td>
+"@
+        }
+        $htmlContent += @"
+        <td>$uptime</td>
+        <td>$cpu</td>
+        <td>$highCpuService</td>
+        <td>$memory</td>
+        <td>$($highMemoryService[0])</td>
+        <td>$($highMemoryService[1])</td>
+        <td>$($portDetails.IISPortCount)</td>
+        <td>w3wp</td>
+        <td>$($portDetails.IISPortCount)</td>
+        <td>$($portDetails.PortStateCounts["Bound"])</td>
+        <td>$($portDetails.PortStateCounts["Closed"])</td>
+        <td>$($portDetails.PortStateCounts["Established"])</td>
+        <td>$($portDetails.PortStateCounts["Listen"])</td>
+        <td>$($portDetails.PortStateCounts["TimeWait"])</td>
+    </tr>
+"@
+    }
+    catch {
+        Write-Host "Failed to retrieve network interface details for $server. Error: $_"
+    }
+}
+
+# Close the HTML content
+$htmlContent += @"
+</table>
+
+</body>
+</html>
+"@
+
+# Save the HTML content to a file
+$htmlFile = "C:\temp\Azure_prod_compass_ServerStatus.html"
+$htmlContent | Out-File -FilePath $htmlFile -Encoding UTF8
+
+# Send the email with HTML content
+#send-mailmessage -from "Dept-DevOpsTeam@tiff.com" -to "MS_Sterling_Compass_Support@tiff.com" -Bcc "Dept-DevOpsTeam@tiff.com naishadh.desai@tiff.com m.ajithkumar@tiff.com" -subject "Compass Production server status" -BodyAsHTML -body $htmlContent -priority Normal -smtpServer smtp.tiffco.net
+#send-mailmessage -from Dept-DevOpsTeam@tiff.com  -to m.sair@tiff.com -Bcc 'm.saitiff.com'  -subject "Compass Azure Production server status" -BodyAsHTML -body $htmlContent -priority Normal -smtpServer smtp.tiffco.net

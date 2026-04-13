@@ -5,7 +5,7 @@
 
 # ================= CONFIG =================
 $mode         = "local"        # local / remote
-$serverList   = "AJITHSAI"
+$serverList   = "server1"
 $serviceNames = "asus"
 $action       = "diagnostic"   # start, stop, restart, status, services, diagnostic, health
 $path_output  = "yes"
