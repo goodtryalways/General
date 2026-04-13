@@ -1,6 +1,6 @@
 ﻿# ================= CONFIG =================
 $mode = "local"   # local / remote
-$serverList = "AJITHSAI"
+$serverList = "server1"
 $serviceNames = "WinRM"
 $action = "services"   # start, stop, restart, status, services, diagnostic
 $path_output = "yes"
